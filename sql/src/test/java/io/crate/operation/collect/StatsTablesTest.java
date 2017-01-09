@@ -42,6 +42,8 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 import static org.hamcrest.core.Is.is;
+import static org.mockito.Matchers.any;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
@@ -178,9 +180,10 @@ public class StatsTablesTest extends CrateUnitTest {
     public void testScheduledQueueCleaner() throws Exception {
         NodeSettingsService nodeSettingsService = new NodeSettingsService(Settings.EMPTY);
         Settings settings = Settings.builder()
-            .put(CrateSettings.STATS_ENABLED.settingName(), true).build();
+            .put(CrateSettings.STATS_ENABLED.settingName(), true).put(CrateSettings.STATS_JOBS_LOG_EXPIRATION.settingName(), "10s").build();
         StatsTables stats = new StatsTables(settings, nodeSettingsService, threadPool);
+        ConcurrentLinkedQueue<JobContextLog> queue = new ConcurrentLinkedQueue();
 
-        assertBusy((Runnable) () -> verify(stats, times(1)).removeExpiredLogs());
+        assertBusy(() -> verify(spy(stats), times(2)).removeExpiredLogs(queue, any(long.class), any(long.class)));
     }
 }
