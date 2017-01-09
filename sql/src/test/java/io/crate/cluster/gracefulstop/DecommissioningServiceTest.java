@@ -52,8 +52,8 @@ public class DecommissioningServiceTest {
 
     @Before
     public void setUp() throws Exception {
-        statsTables = new StatsTables(Settings.EMPTY, mock(NodeSettingsService.class));
         threadPool = mock(ThreadPool.class, Answers.RETURNS_MOCKS.get());
+        statsTables = new StatsTables(Settings.EMPTY, mock(NodeSettingsService.class), threadPool);
         sqlOperations = mock(SQLOperations.class, Answers.RETURNS_MOCKS.get());
         decommissioningService = new TestableDecommissioningService(
             Settings.EMPTY,
@@ -66,6 +66,7 @@ public class DecommissioningServiceTest {
             mock(TransportClusterUpdateSettingsAction.class)
         );
     }
+
 
     @Test
     public void testExitIfNoActiveRequests() throws Exception {

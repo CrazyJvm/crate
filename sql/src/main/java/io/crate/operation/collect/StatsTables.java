@@ -37,7 +37,9 @@ import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.common.util.concurrent.AbstractRunnable;
 import org.elasticsearch.node.settings.NodeSettingsService;
+import org.elasticsearch.threadpool.ThreadPool;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
@@ -61,8 +63,10 @@ import java.util.concurrent.atomic.AtomicReference;
 @Singleton
 public class StatsTables {
 
+    private final static ESLogger LOGGER = Loggers.getLogger(StatsTables.class);
     private final static BlockingQueue<OperationContextLog> NOOP_OPERATIONS_LOG = NoopQueue.instance();
     private final static BlockingQueue<JobContextLog> NOOP_JOBS_LOG = NoopQueue.instance();
+    private final static TimeValue QUEUE_CLEAN_INTERVAL = TimeValue.timeValueSeconds(5);
 
     private final Map<UUID, JobContext> jobsTable = new ConcurrentHashMap<>();
     private final Map<Tuple<Integer, UUID>, OperationContext> operationsTable = new ConcurrentHashMap<>();
@@ -84,11 +88,15 @@ public class StatsTables {
     volatile int lastJobsLogSize;
     volatile TimeValue lastJobsLogExpiration;
     private volatile boolean lastIsEnabled;
+    private final ThreadPool threadPool;
+
+    // visible for testing
+    final ScheduledQueueCleaner scheduledQueue;
 
     private static final ESLogger LOGGER = Loggers.getLogger(StatsTables.class);
 
     @Inject
-    public StatsTables(Settings settings, NodeSettingsService nodeSettingsService) {
+    public StatsTables(Settings settings, NodeSettingsService nodeSettingsService, ThreadPool threadPool) {
         int operationsLogSize = CrateSettings.STATS_OPERATIONS_LOG_SIZE.extract(settings);
         int jobsLogSize = CrateSettings.STATS_JOBS_LOG_SIZE.extract(settings);
         TimeValue jobsLogExpiration = CrateSettings.STATS_JOBS_LOG_EXPIRATION.extractTimeValue(settings);
@@ -102,6 +110,7 @@ public class StatsTables {
             setOperationsLog(0);
         }
 
+        this.threadPool = threadPool;
         initialIsEnabled = isEnabled;
         initialJobsLogSize = jobsLogSize;
         initialJobsLogExpiration = jobsLogExpiration;
@@ -116,6 +125,8 @@ public class StatsTables {
         jobsIterableGetter = new JobsIterableGetter();
         operationsIterableGetter = new OperationsIterableGetter();
         operationsLogIterableGetter = new OperationsLogIterableGetter();
+        scheduledQueue = new ScheduledQueueCleaner();
+        threadPool.schedule(QUEUE_CLEAN_INTERVAL, ThreadPool.Names.GENERIC, scheduledQueue);
     }
 
     /**
@@ -283,6 +294,21 @@ public class StatsTables {
         Queue<JobContextLog> oldQ = jobsLog.get();
         newQ.addAll(oldQ);
         jobsLog.set(newQ);
+    }
+
+    private class ScheduledQueueCleaner extends AbstractRunnable {
+
+        @Override
+        protected void doRun() throws Exception {
+            // TODO: call `removeExpired`
+            LOGGER.info("remove expired jobs from queue");
+            threadPool.schedule(QUEUE_CLEAN_INTERVAL, ThreadPool.Names.GENERIC, this);
+        }
+
+        @Override
+        public void onFailure(Throwable t) {
+            LOGGER.warn("failed to remove expired jobs from jobs_log queue", t);
+        }
     }
 
     private class NodeSettingListener implements NodeSettingsService.Listener {

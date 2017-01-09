@@ -31,25 +31,38 @@ import io.crate.operation.reference.sys.operation.OperationContextLog;
 import io.crate.test.integration.CrateUnitTest;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.node.settings.NodeSettingsService;
+import org.elasticsearch.threadpool.ThreadPool;
 import org.hamcrest.Matchers;
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.doReturn;
-
-import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 import static org.hamcrest.core.Is.is;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 public class StatsTablesTest extends CrateUnitTest {
 
+    private ThreadPool threadPool;
+
+    @Before
+    public void startThreadPool() {
+        threadPool = new ThreadPool(getClass().getName());
+    }
+
+    @After
+    public void terminateThreadPool() throws Exception {
+        terminate(threadPool);
+    }
+
     @Test
-    public void testSettingsChanges() {
+    public void testSettingsChanges() throws Exception {
         NodeSettingsService nodeSettingsService = new NodeSettingsService(Settings.EMPTY);
-        StatsTables stats = new StatsTables(Settings.EMPTY, nodeSettingsService);
+        StatsTables stats = new StatsTables(Settings.EMPTY, nodeSettingsService, threadPool);
 
         assertThat(stats.isEnabled(), is(false));
         assertThat(stats.lastJobsLogSize, is(CrateSettings.STATS_JOBS_LOG_SIZE.defaultValue()));
@@ -57,11 +70,11 @@ public class StatsTablesTest extends CrateUnitTest {
 
         // even though logSizes are > 0 it must be a NoopQueue because the stats are disabled
         assertThat(stats.jobsLog.get(), Matchers.instanceOf(NoopQueue.class));
-
-        stats = new StatsTables(Settings.builder()
+        Settings settings = Settings.builder()
             .put(CrateSettings.STATS_ENABLED.settingName(), true)
             .put(CrateSettings.STATS_JOBS_LOG_SIZE.settingName(), 100)
-            .put(CrateSettings.STATS_OPERATIONS_LOG_SIZE.settingName(), 100).build(), nodeSettingsService);
+            .put(CrateSettings.STATS_OPERATIONS_LOG_SIZE.settingName(), 100).build();
+        stats = new StatsTables(settings, nodeSettingsService, threadPool);
 
         stats.listener.onRefreshSettings(Settings.builder()
             .put(CrateSettings.STATS_OPERATIONS_LOG_SIZE.settingName(), 200).build());
@@ -93,11 +106,11 @@ public class StatsTablesTest extends CrateUnitTest {
     }
 
     @Test
-    public void testLogsArentWipedOnSizeChange() {
+    public void testLogsArentWipedOnSizeChange() throws Exception {
         NodeSettingsService nodeSettingsService = new NodeSettingsService(Settings.EMPTY);
         Settings settings = Settings.builder()
             .put(CrateSettings.STATS_ENABLED.settingName(), true).build();
-        StatsTables stats = new StatsTables(settings, nodeSettingsService);
+        StatsTables stats = new StatsTables(settings, nodeSettingsService, threadPool);
 
         stats.jobsLog.get().add(new JobContextLog(new JobContext(UUID.randomUUID(), "select 1", 1L), null));
 
@@ -125,7 +138,7 @@ public class StatsTablesTest extends CrateUnitTest {
         NodeSettingsService nodeSettingsService = new NodeSettingsService(Settings.EMPTY);
         Settings settings = Settings.builder()
             .put(CrateSettings.STATS_ENABLED.settingName(), true).build();
-        StatsTables stats = new StatsTables(settings, nodeSettingsService);
+        StatsTables stats = new StatsTables(settings, nodeSettingsService, threadPool);
 
         OperationContext ctxA = new OperationContext(0, UUID.randomUUID(), "dummyOperation", 1L);
         stats.operationStarted(ctxA.id, ctxA.jobId, ctxA.name);
@@ -141,7 +154,6 @@ public class StatsTablesTest extends CrateUnitTest {
 
         stats.operationFinished(ctxA.id, ctxA.jobId, null, -1);
         assertTrue(queue.contains(new OperationContextLog(ctxA, null)));
-
     }
 
     @Test
@@ -149,7 +161,7 @@ public class StatsTablesTest extends CrateUnitTest {
         NodeSettingsService nodeSettingsService = new NodeSettingsService(Settings.EMPTY);
         Settings settings = Settings.builder()
             .put(CrateSettings.STATS_ENABLED.settingName(), true).build();
-        StatsTables stats = new StatsTables(settings, nodeSettingsService);
+        StatsTables stats = new StatsTables(settings, nodeSettingsService, threadPool);
 
         ConcurrentLinkedQueue<JobContextLog> queue = new ConcurrentLinkedQueue();
 
@@ -162,4 +174,13 @@ public class StatsTablesTest extends CrateUnitTest {
         assertThat(queue.element().id(), is(UUID.fromString("067e6162-3b6f-4ae2-a171-2470b63dff03")));
     }
 
+    @Test
+    public void testScheduledQueueCleaner() throws Exception {
+        NodeSettingsService nodeSettingsService = new NodeSettingsService(Settings.EMPTY);
+        Settings settings = Settings.builder()
+            .put(CrateSettings.STATS_ENABLED.settingName(), true).build();
+        StatsTables stats = new StatsTables(settings, nodeSettingsService, threadPool);
+
+        assertBusy((Runnable) () -> verify(stats, times(1)).removeExpiredLogs());
+    }
 }
