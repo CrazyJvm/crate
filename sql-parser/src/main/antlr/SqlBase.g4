@@ -208,6 +208,7 @@ valueExpression
         right=valueExpression                                                        #arithmeticBinary
     | left=valueExpression operator=(PLUS | MINUS) right=valueExpression             #arithmeticBinary
     | left=valueExpression CONCAT right=valueExpression                              #concatenation
+    | valueExpression CAST_OPERATOR dataType                                         #doubleColonCast
     ;
 
 primaryExpression
@@ -233,7 +234,6 @@ primaryExpression
     | CASE valueExpression whenClause+ (ELSE elseExpr=expr)? END                     #simpleCase
     | CASE whenClause+ (ELSE elseExpr=expr)? END                                     #searchedCase
     | IF '('condition=expr ',' trueValue=expr (',' falseValue=expr)? ')'             #ifCase
-    | primaryExpression CAST_OPERATOR dataType                                       #doubleColonCast
     ;
 
 identExpr
