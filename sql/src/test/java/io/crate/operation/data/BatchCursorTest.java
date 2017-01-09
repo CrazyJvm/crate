@@ -22,8 +22,11 @@
 
 package io.crate.operation.data;
 
+import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.MoreExecutors;
+import com.google.common.util.concurrent.SettableFuture;
+import io.crate.concurrent.CompletionListenable;
 import io.crate.core.collections.Row;
 import io.crate.core.collections.RowN;
 import io.crate.operation.collect.CrateCollector;
@@ -40,8 +43,9 @@ import static org.hamcrest.Matchers.is;
 public class BatchCursorTest {
 
 
-    static abstract class BaseBatchConsumer implements BatchConsumer {
+    static abstract class BaseBatchConsumer implements BatchConsumer, CompletionListenable {
         protected  BatchCursor cursor;
+        private SettableFuture<Void> completionFuture = SettableFuture.create();
 
         private void consume() {
             if (cursor.status() == BatchCursor.Status.ON_ROW) {
@@ -52,8 +56,14 @@ public class BatchCursorTest {
             if (!cursor.allLoaded()) {
                 cursor.loadNextBatch().addListener(this::consume, MoreExecutors.directExecutor());
             } else {
+                completionFuture.set(null);
                 cursor.close();
             }
+        }
+
+        @Override
+        public ListenableFuture<?> completionFuture() {
+            return completionFuture;
         }
 
         protected abstract void handleRow();
@@ -64,7 +74,6 @@ public class BatchCursorTest {
             consume();
         }
     }
-
 
     static class BatchPrinter extends BaseBatchConsumer {
         protected void handleRow() {
@@ -78,6 +87,7 @@ public class BatchCursorTest {
 
         @Override
         protected void handleRow() {
+            System.err.println("handleRow: " + Arrays.toString(cursor.materialize()));
             rows.add(new RowN(cursor.materialize()));
         }
     }
@@ -87,10 +97,13 @@ public class BatchCursorTest {
         private final Object[][] data;
         private final int rowSize;
         private int idx = 0;
+        private final int numBatches;
+        private int batchNum = 1;
 
-        DataCursor(Object[][] data, int rowSize) {
+        DataCursor(Object[][] data, int rowSize, int numBatches) {
             this.data = data;
             this.rowSize = rowSize;
+            this.numBatches = numBatches;
         }
 
 
@@ -101,7 +114,7 @@ public class BatchCursorTest {
 
         @Override
         public boolean moveNext() {
-            return data.length > ++idx;
+            return data.length * batchNum > ++idx;
         }
 
         @Override
@@ -111,7 +124,7 @@ public class BatchCursorTest {
 
         @Override
         public Status status() {
-            if (idx >= data.length) {
+            if (idx >= data.length * batchNum) {
                 return Status.OFF_ROW;
             } else if (idx == -1) {
                 return Status.CLOSED;
@@ -121,12 +134,19 @@ public class BatchCursorTest {
 
         @Override
         public ListenableFuture<Void> loadNextBatch() {
-            throw new IllegalStateException("loadNextBatch not allowed on loaded cursor");
+            if (allLoaded()){
+                throw new IllegalStateException("loadNextBatch not allowed on loaded cursor");
+            }
+            if (status() != Status.OFF_ROW){
+                throw new IllegalStateException("loadNextBatch not OFF_ROW");
+            }
+            batchNum++;
+            return Futures.immediateFuture(null);
         }
 
         @Override
         public boolean allLoaded() {
-            return true;
+            return batchNum >= numBatches;
         }
 
         @Override
@@ -136,13 +156,16 @@ public class BatchCursorTest {
 
         @Override
         public Object get(int index) {
+            assert status() == Status.ON_ROW;
             assert index <= rowSize;
-            return data[idx][index];
+            assert idx < data.length*batchNum;
+            return data[idx%data.length][index];
         }
 
         @Override
         public Object[] materialize() {
-            return Arrays.copyOf(data[idx], rowSize);
+            assert status() == Status.ON_ROW;
+            return Arrays.copyOf(data[idx%data.length], rowSize);
         }
     }
 
@@ -249,10 +272,27 @@ public class BatchCursorTest {
 
     }
 
+    @Test
+    public void testDataCursor() throws Exception {
+        DataCursor d = new DataCursor(new Object[][]{{1}, {3}, {5}, {7}}, 1, 1);
+        BatchCollector c = new BatchCollector();
+        assertThat(d.allLoaded(), is(true));
+        c.accept(d);
+        c.completionFuture().get();
+        assertThat(c.rows.size(), is(4));
+
+        d = new DataCursor(new Object[][]{{1}, {3}, {5}, {7}}, 1, 2);
+        c = new BatchCollector();
+        assertThat(d.allLoaded(), is(false));
+        c.accept(d);
+        c.completionFuture().get();
+        assertThat(d.allLoaded(), is(true));
+        assertThat(c.rows.size(), is(8));
+    }
 
     @Test
     public void testLimitProjector() throws Exception {
-        DataCursor d = new DataCursor(new Object[][]{{1, 2}, {3, 4}, {5, 6}, {7, 8}}, 2);
+        DataCursor d = new DataCursor(new Object[][]{{1, 2}, {3, 4}, {5, 6}, {7, 8}}, 2, 2);
         BatchProjector lp = new LimitProjector(3);
         BatchCollector c = new BatchCollector();
         BatchConsumer chain = lp.andThen(c);
@@ -263,4 +303,21 @@ public class BatchCursorTest {
 
     }
 
+
+    @Test
+    public void testNestedLoop() throws Exception {
+        DataCursor d1 = new DataCursor(new Object[][]{{1}, {3}, {5}, {7}}, 1, 2);
+        DataCursor d2 = new DataCursor(new Object[][]{{2}, {4}, {6}, {8}}, 1, 2);
+        BatchCollector c = new BatchCollector();
+
+        BatchedNestedLoopOperation nl = new BatchedNestedLoopOperation(c);
+
+        nl.left().accept(d1);
+        nl.right().accept(d2);
+
+        nl.completionFuture().get();
+        assertThat(c.rows.size(), is(64));
+
+
+    }
 }
