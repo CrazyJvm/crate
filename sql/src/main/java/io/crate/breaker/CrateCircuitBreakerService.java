@@ -43,12 +43,14 @@ public class CrateCircuitBreakerService extends CircuitBreakerService {
     public static final String DEFAULT_QUERY_CIRCUIT_BREAKER_TYPE = "memory";
 
     public static final String QUERY = "query";
+    public static final String JOBS_LOG = "jobs_log";
 
     public static final String BREAKING_EXCEPTION_MESSAGE =
         "[query] Data too large, data for [%s] would be larger than limit of [%d/%s]";
 
     private final CircuitBreakerService esCircuitBreakerService;
     private BreakerSettings queryBreakerSettings;
+    private BreakerSettings jobsLogBreakerSettings;
 
     @Inject
     public CrateCircuitBreakerService(Settings settings,
@@ -69,7 +71,13 @@ public class CrateCircuitBreakerService extends CircuitBreakerService {
                 settings.get(QUERY_CIRCUIT_BREAKER_TYPE_SETTING,
                     DEFAULT_QUERY_CIRCUIT_BREAKER_TYPE)));
 
+        jobsLogBreakerSettings = new BreakerSettings(JOBS_LOG, memoryLimit, overhead,
+            CircuitBreaker.Type.parseValue(
+                settings.get(QUERY_CIRCUIT_BREAKER_TYPE_SETTING,
+                    DEFAULT_QUERY_CIRCUIT_BREAKER_TYPE)));
+
         registerBreaker(queryBreakerSettings);
+        registerBreaker(jobsLogBreakerSettings);
         nodeSettingsService.addListener(new ApplySettings());
     }
 

@@ -21,6 +21,7 @@
 
 package io.crate.operation.collect;
 
+import io.crate.breaker.CrateCircuitBreakerService;
 import io.crate.core.collections.BlockingEvictingQueue;
 import io.crate.core.collections.NoopQueue;
 import io.crate.metadata.settings.CrateSettings;
@@ -30,14 +31,13 @@ import io.crate.operation.reference.sys.operation.OperationContext;
 import io.crate.operation.reference.sys.operation.OperationContextLog;
 import io.crate.test.integration.CrateUnitTest;
 import org.elasticsearch.common.settings.Settings;
+import org.elasticsearch.indices.breaker.CircuitBreakerService;
+import org.elasticsearch.indices.breaker.HierarchyCircuitBreakerService;
 import org.elasticsearch.node.settings.NodeSettingsService;
 import org.hamcrest.Matchers;
+import org.junit.BeforeClass;
 import org.junit.Test;
 
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.doReturn;
-
-import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -46,10 +46,20 @@ import static org.hamcrest.core.Is.is;
 
 public class StatsTablesTest extends CrateUnitTest {
 
+    private static CrateCircuitBreakerService breakerService;
+
+    @BeforeClass
+    public static void beforeClass() {
+        NodeSettingsService settingsService = new NodeSettingsService(Settings.EMPTY);
+        CircuitBreakerService esBreakerService = new HierarchyCircuitBreakerService(Settings.EMPTY, settingsService);
+        breakerService = new CrateCircuitBreakerService(
+            Settings.EMPTY, settingsService, esBreakerService);
+    }
+
     @Test
     public void testSettingsChanges() {
         NodeSettingsService nodeSettingsService = new NodeSettingsService(Settings.EMPTY);
-        StatsTables stats = new StatsTables(Settings.EMPTY, nodeSettingsService);
+        StatsTables stats = new StatsTables(Settings.EMPTY, nodeSettingsService, breakerService);
 
         assertThat(stats.isEnabled(), is(false));
         assertThat(stats.lastJobsLogSize, is(CrateSettings.STATS_JOBS_LOG_SIZE.defaultValue()));
@@ -61,7 +71,7 @@ public class StatsTablesTest extends CrateUnitTest {
         stats = new StatsTables(Settings.builder()
             .put(CrateSettings.STATS_ENABLED.settingName(), true)
             .put(CrateSettings.STATS_JOBS_LOG_SIZE.settingName(), 100)
-            .put(CrateSettings.STATS_OPERATIONS_LOG_SIZE.settingName(), 100).build(), nodeSettingsService);
+            .put(CrateSettings.STATS_OPERATIONS_LOG_SIZE.settingName(), 100).build(), nodeSettingsService, breakerService);
 
         stats.listener.onRefreshSettings(Settings.builder()
             .put(CrateSettings.STATS_OPERATIONS_LOG_SIZE.settingName(), 200).build());
@@ -97,7 +107,7 @@ public class StatsTablesTest extends CrateUnitTest {
         NodeSettingsService nodeSettingsService = new NodeSettingsService(Settings.EMPTY);
         Settings settings = Settings.builder()
             .put(CrateSettings.STATS_ENABLED.settingName(), true).build();
-        StatsTables stats = new StatsTables(settings, nodeSettingsService);
+        StatsTables stats = new StatsTables(settings, nodeSettingsService, breakerService);
 
         stats.jobsLog.get().add(new JobContextLog(new JobContext(UUID.randomUUID(), "select 1", 1L), null));
 
@@ -125,7 +135,7 @@ public class StatsTablesTest extends CrateUnitTest {
         NodeSettingsService nodeSettingsService = new NodeSettingsService(Settings.EMPTY);
         Settings settings = Settings.builder()
             .put(CrateSettings.STATS_ENABLED.settingName(), true).build();
-        StatsTables stats = new StatsTables(settings, nodeSettingsService);
+        StatsTables stats = new StatsTables(settings, nodeSettingsService, breakerService);
 
         OperationContext ctxA = new OperationContext(0, UUID.randomUUID(), "dummyOperation", 1L);
         stats.operationStarted(ctxA.id, ctxA.jobId, ctxA.name);
@@ -149,7 +159,7 @@ public class StatsTablesTest extends CrateUnitTest {
         NodeSettingsService nodeSettingsService = new NodeSettingsService(Settings.EMPTY);
         Settings settings = Settings.builder()
             .put(CrateSettings.STATS_ENABLED.settingName(), true).build();
-        StatsTables stats = new StatsTables(settings, nodeSettingsService);
+        StatsTables stats = new StatsTables(settings, nodeSettingsService, breakerService);
 
         ConcurrentLinkedQueue<JobContextLog> queue = new ConcurrentLinkedQueue();
 
@@ -161,5 +171,4 @@ public class StatsTablesTest extends CrateUnitTest {
         assertThat(queue.size(), is(1));
         assertThat(queue.element().id(), is(UUID.fromString("067e6162-3b6f-4ae2-a171-2470b63dff03")));
     }
-
 }

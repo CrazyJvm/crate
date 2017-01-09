@@ -23,6 +23,8 @@ package io.crate.operation.collect;
 
 import com.google.common.base.Supplier;
 import com.twitter.jsr166e.LongAdder;
+import io.crate.breaker.CrateCircuitBreakerService;
+import io.crate.breaker.RamAccountingContext;
 import io.crate.core.collections.BlockingEvictingQueue;
 import io.crate.core.collections.NoopQueue;
 import io.crate.metadata.settings.CrateSettings;
@@ -30,6 +32,8 @@ import io.crate.operation.reference.sys.job.JobContext;
 import io.crate.operation.reference.sys.job.JobContextLog;
 import io.crate.operation.reference.sys.operation.OperationContext;
 import io.crate.operation.reference.sys.operation.OperationContextLog;
+import org.elasticsearch.common.breaker.CircuitBreaker;
+import org.elasticsearch.common.breaker.CircuitBreakingException;
 import org.elasticsearch.common.collect.Tuple;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.inject.Singleton;
@@ -74,6 +78,8 @@ public class StatsTables {
     private final LongAdder activeRequests = new LongAdder();
 
     protected final NodeSettingsService.Listener listener = new NodeSettingListener();
+    private final CircuitBreaker circuitBreaker;
+    private final RamAccountingContext ramAccountingContext;
     private int initialOperationsLogSize;
     private int initialJobsLogSize;
     private TimeValue initialJobsLogExpiration;
@@ -84,7 +90,11 @@ public class StatsTables {
     private volatile boolean lastIsEnabled;
 
     @Inject
-    public StatsTables(Settings settings, NodeSettingsService nodeSettingsService) {
+    public StatsTables(Settings settings,
+                       NodeSettingsService nodeSettingsService,
+                       CrateCircuitBreakerService breakerService) {
+        circuitBreaker = breakerService.getBreaker(CrateCircuitBreakerService.QUERY);
+        ramAccountingContext = new RamAccountingContext("jobsLogContext", circuitBreaker);
         int operationsLogSize = CrateSettings.STATS_OPERATIONS_LOG_SIZE.extract(settings);
         int jobsLogSize = CrateSettings.STATS_JOBS_LOG_SIZE.extract(settings);
         TimeValue jobsLogExpiration = CrateSettings.STATS_JOBS_LOG_EXPIRATION.extractTimeValue(settings);
@@ -257,27 +267,42 @@ public class StatsTables {
         }
     }
 
-    private void setJobsLog(int size, TimeValue expiration) {
-        Queue newQ;
+    protected void setJobsLog(int size, TimeValue expiration) {
+        Queue<JobContextLog> newQ;
 
         if (size == 0) {
             if (expiration.getMillis() > 0) {
-                newQ = new ConcurrentLinkedQueue<JobContextLog>();
+                newQ = new ConcurrentLinkedQueue<>();
+                copyJobsLogTo(newQ);
             } else {
                 jobsLog.set(NOOP_JOBS_LOG);
                 return;
             }
         } else {
             if (expiration.getMillis() > 0) {
-                newQ = new ConcurrentLinkedQueue<JobContextLog>();
+                newQ = new ConcurrentLinkedQueue<>();
+                jobsLog.get().forEach(entry -> {
+                    while (true) {
+                        try {
+                            ramAccountingContext.addBytes(entry.estimateSize());
+                            break;
+                        } catch (CircuitBreakingException e) {
+                            newQ.remove();
+                        }
+                    }
+                    newQ.add(entry);
+                });
             } else {
-                newQ = new BlockingEvictingQueue<JobContextLog>(size);
+                newQ = new BlockingEvictingQueue<>(size);
+                copyJobsLogTo(newQ);
             }
         }
+        jobsLog.set(newQ);
+    }
 
+    private void copyJobsLogTo(Queue<JobContextLog> newQ) {
         Queue<JobContextLog> oldQ = jobsLog.get();
         newQ.addAll(oldQ);
-        jobsLog.set(newQ);
     }
 
     private class NodeSettingListener implements NodeSettingsService.Listener {
