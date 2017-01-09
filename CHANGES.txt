@@ -5,6 +5,8 @@ Changes for Crate
 Unreleased
 ==========
 
+ - Fixed an issue where parentheses were needed when using :: casting.
+
  - Fixed a NPE when using a ``percentile`` aggregation in a multi-node
    environment.
 

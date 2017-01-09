@@ -182,7 +182,6 @@ booleanExpression
     | left=booleanExpression operator=OR right=booleanExpression                     #logicalBinary
     | MATCH '(' matchPredicateIdents ',' term=primaryExpression ')'
         (USING matchType=ident withProperties?)?                                     #match
-    | booleanExpression CAST_OPERATOR dataType                                       #doubleColonCast
     ;
 
 predicated
@@ -234,6 +233,7 @@ primaryExpression
     | CASE valueExpression whenClause+ (ELSE elseExpr=expr)? END                     #simpleCase
     | CASE whenClause+ (ELSE elseExpr=expr)? END                                     #searchedCase
     | IF '('condition=expr ',' trueValue=expr (',' falseValue=expr)? ')'             #ifCase
+    | primaryExpression CAST_OPERATOR dataType                                       #doubleColonCast
     ;
 
 identExpr
